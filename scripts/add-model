@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""
+add-model — OpenClaw 模型管理工具
+
+快速添加、删除、查看模型和 Provider，自动同步 allowlist / fallbacks 并重启 Gateway。
+
+用法：
+  add-model <model-id> [显示名]                    # 添加模型到 provider
+  add-model list [--provider xxx] [--all]          # 列出模型
+  add-model remove <model-id> [--provider xxx]     # 移除模型
+  add-model add-provider <name>                    # 创建新 provider
+  add-model remove-provider <name>                 # 删除 provider
+  add-model providers                              # 列出所有 provider
+
+示例：
+  # 添加模型（默认到 openrouter）
+  add-model gemini-3-flash-preview "Gemini 3 Flash"
+  add-model gpt-4o-vision "GPT-4o Vision" --image
+  add-model deepseek-r1 "DeepSeek R1" --reasoning --ctx 128000 --cost-in 2 --cost-out 8
+
+  # 指定 provider
+  add-model doubao-seed "Doubao Seed" --provider volc-coding
+  add-model kimi-k2.5 "Kimi K2.5" --image --provider modelsproxy
+
+  # 删除模型（两种写法都行）
+  add-model remove claude-haiku-4-5-20251001
+  add-model remove modelsproxy/claude-haiku-4-5-20251001
+
+  # 列出模型
+  add-model list                          # 默认 provider
+  add-model list --all                    # 所有 provider
+  add-model list --provider volc-coding   # 指定 provider
+
+  # Provider 管理
+  add-model providers                     # 列出所有 provider
+  add-model add-provider moonshot --base-url https://api.moonshot.ai/v1 --api-key sk-xxx --api openai-completions
+  add-model remove-provider moonshot
+"""
+
+import json, sys, os, subprocess, argparse
+
+CONFIG = os.path.expanduser("~/.openclaw/openclaw.json")
+DEFAULT_PROVIDER = "openrouter"
+
+def load_config():
+    with open(CONFIG, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_config(d):
+    with open(CONFIG, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+
+def restart_gw():
+    print("🔄 重启 Gateway...")
+    subprocess.run(["openclaw", "gateway", "restart"], capture_output=True)
+    print("✅ Gateway 已重启")
+
+# ─── List ───
+
+def list_models(d, provider):
+    models = d.get("models", {}).get("providers", {}).get(provider, {}).get("models", [])
+    if not models:
+        print(f"⚠️  provider '{provider}' 无模型或不存在")
+        return
+    print(f"\n🐟 {provider} 模型列表 ({len(models)} 个)\n")
+    print(f"  {'ID':<40s} {'Name':<25s} {'Input':<15s} {'Ctx':>8s}  Cost(in/out)")
+    print(f"  {'─'*40} {'─'*25} {'─'*15} {'─'*8}  {'─'*15}")
+    for m in models:
+        mid = m.get("id", "?")
+        name = m.get("name", mid)
+        inp = ",".join(m.get("input", ["text"]))
+        ctx = str(m.get("contextWindow", 200000))
+        ci = m.get("cost", {}).get("input", 0)
+        co = m.get("cost", {}).get("output", 0)
+        r = " 🧠" if m.get("reasoning") else ""
+        print(f"  {mid:<40s} {name:<25s} {inp:<15s} {ctx:>8s}  ${ci}/{co}{r}")
+    print()
+
+def list_all_models(d):
+    providers = d.get("models", {}).get("providers", {})
+    if not providers:
+        print("⚠️  没有配置任何 provider")
+        return
+    for prov in providers:
+        list_models(d, prov)
+
+def list_providers(d):
+    providers = d.get("models", {}).get("providers", {})
+    if not providers:
+        print("⚠️  没有配置任何 provider")
+        return
+    print(f"\n🏭 已配置的 Providers ({len(providers)} 个)\n")
+    print(f"  {'Provider':<25s} {'API':<25s} {'Models':>6s}  Base URL")
+    print(f"  {'─'*25} {'─'*25} {'─'*6}  {'─'*40}")
+    for name, cfg in providers.items():
+        api = cfg.get("api", "?")
+        n_models = len(cfg.get("models", []))
+        base = cfg.get("baseUrl", "?")
+        if len(base) > 45:
+            base = base[:42] + "..."
+        print(f"  {name:<25s} {api:<25s} {n_models:>6d}  {base}")
+    print()
+
+# ─── Remove model ───
+
+def remove_model(d, provider, model_id):
+    # 支持 provider/model-id 写法
+    if "/" in model_id and provider == DEFAULT_PROVIDER:
+        parts = model_id.split("/", 1)
+        provider = parts[0]
+        model_id = parts[1]
+
+    prov_cfg = d.get("models", {}).get("providers", {}).get(provider)
+    if not prov_cfg:
+        print(f"❌ provider '{provider}' 不存在")
+        return
+
+    models = prov_cfg.get("models", [])
+    before = len(models)
+    models = [m for m in models if m["id"] != model_id]
+    if len(models) == before:
+        print(f"⚠️  未找到模型 '{model_id}' in {provider}")
+        candidates = [m["id"] for m in prov_cfg.get("models", []) if model_id.lower() in m["id"].lower()]
+        if candidates:
+            print(f"   你是不是想删: {', '.join(candidates)}")
+        return
+
+    d["models"]["providers"][provider]["models"] = models
+
+    # 同步移除 allowlist
+    allowlist = d.get("agents", {}).get("defaults", {}).get("models", None)
+    if allowlist is not None:
+        ref = f"{provider}/{model_id}"
+        if ref in allowlist:
+            del allowlist[ref]
+            print(f"📋 已从 allowlist 移除: {ref}")
+
+    # 同步移除 fallbacks
+    model_cfg = d.get("agents", {}).get("defaults", {}).get("model", {})
+    ref = f"{provider}/{model_id}"
+    fallbacks = model_cfg.get("fallbacks", [])
+    if ref in fallbacks:
+        fallbacks.remove(ref)
+        print(f"📋 已从 fallbacks 移除: {ref}")
+
+    save_config(d)
+    print(f"🗑️  已移除 {provider}/{model_id}")
+    restart_gw()
+
+# ─── Add model ───
+
+def add_model(d, provider, model_id, name, image, reasoning, ctx, cost_in, cost_out, max_tokens):
+    prov = d.get("models", {}).get("providers", {}).get(provider)
+    if not prov:
+        print(f"❌ provider '{provider}' 不存在")
+        print(f"   用 'add-model add-provider {provider} --base-url URL --api-key KEY' 先创建")
+        sys.exit(1)
+
+    for m in prov.get("models", []):
+        if m["id"] == model_id:
+            print(f"⚠️  模型 '{model_id}' 已存在于 {provider}，跳过")
+            return
+
+    inp = ["text", "image"] if image else ["text"]
+    new_model = {
+        "id": model_id,
+        "name": name or model_id,
+        "reasoning": reasoning,
+        "input": inp,
+        "cost": {
+            "input": cost_in,
+            "output": cost_out,
+            "cacheRead": 0,
+            "cacheWrite": 0
+        },
+        "contextWindow": ctx,
+        "maxTokens": max_tokens
+    }
+
+    prov.setdefault("models", []).append(new_model)
+
+    # 同步 allowlist
+    allowlist = d.get("agents", {}).get("defaults", {}).get("models", None)
+    if allowlist is not None:
+        ref = f"{provider}/{model_id}"
+        if ref not in allowlist:
+            allowlist[ref] = {"alias": name or model_id}
+            print(f"📋 已加入 allowlist: {ref}")
+
+    save_config(d)
+    print(f"✅ 已添加 {provider}/{model_id}")
+    print(f"   Name: {name or model_id}")
+    print(f"   Input: {','.join(inp)}")
+    print(f"   Context: {ctx}")
+    print(f"   Reasoning: {reasoning}")
+    print(f"   Cost: ${cost_in}/{cost_out}")
+    restart_gw()
+
+# ─── Provider management ───
+
+def add_provider(d, name, base_url, api_key, api_mode):
+    providers = d.setdefault("models", {}).setdefault("providers", {})
+    if name in providers:
+        print(f"⚠️  provider '{name}' 已存在，跳过")
+        print(f"   如需修改，先 remove-provider 再重建")
+        return
+
+    providers[name] = {
+        "baseUrl": base_url,
+        "apiKey": api_key,
+        "api": api_mode,
+        "models": []
+    }
+
+    save_config(d)
+    print(f"✅ 已创建 provider: {name}")
+    print(f"   Base URL: {base_url}")
+    print(f"   API: {api_mode}")
+    print(f"   现在可以用 'add-model <model-id> \"Name\" --provider {name}' 添加模型")
+
+def remove_provider(d, name):
+    providers = d.get("models", {}).get("providers", {})
+    if name not in providers:
+        print(f"⚠️  provider '{name}' 不存在")
+        return
+
+    model_ids = [m["id"] for m in providers[name].get("models", [])]
+    allowlist = d.get("agents", {}).get("defaults", {}).get("models", None)
+    fallbacks = d.get("agents", {}).get("defaults", {}).get("model", {}).get("fallbacks", [])
+
+    removed_al = 0
+    removed_fb = 0
+    for mid in model_ids:
+        ref = f"{name}/{mid}"
+        if allowlist and ref in allowlist:
+            del allowlist[ref]
+            removed_al += 1
+        if ref in fallbacks:
+            fallbacks.remove(ref)
+            removed_fb += 1
+
+    del providers[name]
+    save_config(d)
+
+    msg = f"🗑️  已删除 provider: {name} ({len(model_ids)} 个模型)"
+    if removed_al:
+        msg += f"\n   📋 清理了 {removed_al} 个 allowlist 条目"
+    if removed_fb:
+        msg += f"\n   📋 清理了 {removed_fb} 个 fallback 条目"
+    print(msg)
+    restart_gw()
+
+# ─── Main ───
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="add-model",
+        description="OpenClaw 模型管理工具 🐟 — 零 token 消耗的本地模型管理",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例：
+  add-model gemini-3-flash "Gemini 3 Flash" --image
+  add-model remove claude-haiku-4-5-20251001
+  add-model remove modelsproxy/claude-haiku-4-5-20251001
+  add-model list --all
+  add-model providers
+  add-model add-provider moonshot --base-url https://api.moonshot.ai/v1 --api-key sk-xxx
+  add-model remove-provider moonshot
+"""
+    )
+
+    p.add_argument("action", help="model-id | list | remove | providers | add-provider | remove-provider")
+    p.add_argument("name_or_id", nargs="?", default=None, help="显示名(add) / model-id(remove) / provider名")
+    p.add_argument("--image", action="store_true", help="支持图片输入")
+    p.add_argument("--reasoning", action="store_true", help="推理模型")
+    p.add_argument("--ctx", type=int, default=200000, help="上下文窗口 (默认 200000)")
+    p.add_argument("--max-tokens", type=int, default=8192, help="最大输出 tokens (默认 8192)")
+    p.add_argument("--cost-in", type=float, default=0, help="输入成本 $/M (默认 0)")
+    p.add_argument("--cost-out", type=float, default=0, help="输出成本 $/M (默认 0)")
+    p.add_argument("--provider", default=DEFAULT_PROVIDER, help=f"目标 provider (默认 {DEFAULT_PROVIDER})")
+    p.add_argument("--all", action="store_true", help="列出所有 provider 的模型")
+    p.add_argument("--base-url", default=None, help="Provider API 地址")
+    p.add_argument("--api-key", default=None, help="Provider API Key")
+    p.add_argument("--api", default="openai-completions", choices=["openai-completions", "anthropic-messages"], help="API 兼容模式 (默认 openai-completions)")
+
+    args = p.parse_args()
+    d = load_config()
+
+    if args.action == "list":
+        if args.all:
+            list_all_models(d)
+        else:
+            list_models(d, args.provider)
+
+    elif args.action == "providers":
+        list_providers(d)
+
+    elif args.action == "remove":
+        if not args.name_or_id:
+            print("❌ 用法: add-model remove <model-id> [--provider xxx]")
+            print("   或:   add-model remove provider/model-id")
+            sys.exit(1)
+        remove_model(d, args.provider, args.name_or_id)
+
+    elif args.action == "add-provider":
+        if not args.name_or_id:
+            print("❌ 用法: add-model add-provider <name> --base-url URL --api-key KEY [--api openai-completions]")
+            sys.exit(1)
+        if not args.base_url or not args.api_key:
+            print("❌ 必须提供 --base-url 和 --api-key")
+            sys.exit(1)
+        add_provider(d, args.name_or_id, args.base_url, args.api_key, args.api)
+
+    elif args.action == "remove-provider":
+        if not args.name_or_id:
+            print("❌ 用法: add-model remove-provider <name>")
+            sys.exit(1)
+        remove_provider(d, args.name_or_id)
+
+    else:
+        add_model(d, args.provider, args.action, args.name_or_id,
+                  args.image, args.reasoning, args.ctx,
+                  args.cost_in, args.cost_out, args.max_tokens)
+
+if __name__ == "__main__":
+    main()
