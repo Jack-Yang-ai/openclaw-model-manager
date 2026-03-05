@@ -250,6 +250,164 @@ def remove_provider(d, name):
     print(msg)
     restart_gw()
 
+# ─── Import preset ───
+
+def get_presets_dir():
+    """查找 presets 目录：优先脚本同级，其次 skill 安装目录"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # 脚本在 scripts/ 下，presets 在同级
+    candidates = [
+        os.path.join(script_dir, "..", "presets"),
+        os.path.join(script_dir, "presets"),
+        os.path.expanduser("~/.openclaw/workspace/skills/model-manager/presets"),
+        os.path.expanduser("~/.openclaw/skills/model-manager/presets"),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return os.path.abspath(c)
+    return None
+
+def list_presets():
+    presets_dir = get_presets_dir()
+    if not presets_dir:
+        print("⚠️  未找到 presets 目录")
+        return
+    files = [f for f in os.listdir(presets_dir) if f.endswith(".json")]
+    if not files:
+        print("⚠️  presets 目录为空")
+        return
+    print(f"\n📦 可用预设 ({len(files)} 个)\n")
+    for f in sorted(files):
+        path = os.path.join(presets_dir, f)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                preset = json.load(fh)
+            name = preset.get("name", f)
+            desc = preset.get("description", "")
+            n_models = len(preset.get("models", []))
+            prov_id = preset.get("provider", {}).get("id", "?")
+            print(f"  {f.replace('.json',''):<25s} {name}")
+            print(f"  {'':25s} Provider: {prov_id} | {n_models} 个模型")
+            if desc:
+                print(f"  {'':25s} {desc[:60]}")
+            print()
+        except Exception as e:
+            print(f"  {f:<25s} ❌ 解析失败: {e}")
+    print(f"  用法: add-model import <预设名> --api-key YOUR_KEY")
+    print()
+
+def import_preset(d, preset_name, api_key_override):
+    presets_dir = get_presets_dir()
+    if not presets_dir:
+        print("❌ 未找到 presets 目录")
+        sys.exit(1)
+
+    # 支持带或不带 .json
+    fname = preset_name if preset_name.endswith(".json") else preset_name + ".json"
+    path = os.path.join(presets_dir, fname)
+
+    # 也支持直接传文件路径或 URL
+    if not os.path.exists(path):
+        if os.path.exists(preset_name):
+            path = preset_name
+        else:
+            print(f"❌ 预设 '{preset_name}' 不存在")
+            print(f"   可用预设: {', '.join(f.replace('.json','') for f in os.listdir(presets_dir) if f.endswith('.json'))}")
+            sys.exit(1)
+
+    with open(path, "r", encoding="utf-8") as f:
+        preset = json.load(f)
+
+    prov_cfg = preset.get("provider", {})
+    prov_id = prov_cfg.get("id")
+    if not prov_id:
+        print("❌ 预设缺少 provider.id")
+        sys.exit(1)
+
+    providers = d.setdefault("models", {}).setdefault("providers", {})
+
+    # 创建或更新 provider
+    if prov_id not in providers:
+        if not api_key_override and not prov_cfg.get("apiKey"):
+            print(f"❌ Provider '{prov_id}' 不存在，需要提供 --api-key")
+            sys.exit(1)
+        providers[prov_id] = {
+            "baseUrl": prov_cfg.get("baseUrl", ""),
+            "apiKey": api_key_override or prov_cfg.get("apiKey", ""),
+            "api": prov_cfg.get("api", "openai-completions"),
+            "models": []
+        }
+        print(f"🏭 创建 provider: {prov_id}")
+        print(f"   Base URL: {prov_cfg.get('baseUrl', '')}")
+        print(f"   API: {prov_cfg.get('api', 'openai-completions')}")
+    elif api_key_override:
+        providers[prov_id]["apiKey"] = api_key_override
+        print(f"🔑 更新 {prov_id} 的 API Key")
+
+    # 导入模型
+    existing_ids = {m["id"] for m in providers[prov_id].get("models", [])}
+    allowlist = d.get("agents", {}).get("defaults", {}).get("models", None)
+    added = 0
+    skipped = 0
+
+    for model in preset.get("models", []):
+        mid = model["id"]
+        if mid in existing_ids:
+            skipped += 1
+            continue
+
+        providers[prov_id].setdefault("models", []).append(model)
+        existing_ids.add(mid)
+        added += 1
+
+        # 同步 allowlist
+        if allowlist is not None:
+            ref = f"{prov_id}/{mid}"
+            if ref not in allowlist:
+                allowlist[ref] = {"alias": model.get("name", mid)}
+
+    save_config(d)
+    print(f"\n📦 预设 '{preset.get('name', preset_name)}' 导入完成")
+    print(f"   ✅ 新增: {added} 个模型")
+    if skipped:
+        print(f"   ⏭️  跳过: {skipped} 个（已存在）")
+    print()
+
+    # 列出导入后的模型
+    list_models(d, prov_id)
+    restart_gw()
+
+# ─── Export preset ───
+
+def export_preset(d, provider, output_path, preset_name, description):
+    prov_cfg = d.get("models", {}).get("providers", {}).get(provider)
+    if not prov_cfg:
+        print(f"❌ provider '{provider}' 不存在")
+        sys.exit(1)
+
+    preset = {
+        "name": preset_name or provider,
+        "description": description or f"Exported from {provider}",
+        "provider": {
+            "id": provider,
+            "baseUrl": prov_cfg.get("baseUrl", ""),
+            "api": prov_cfg.get("api", "openai-completions")
+            # 注意：不导出 apiKey
+        },
+        "models": prov_cfg.get("models", [])
+    }
+
+    if not output_path:
+        output_path = f"{provider}.json"
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(preset, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ 已导出预设: {output_path}")
+    print(f"   Provider: {provider}")
+    print(f"   Models: {len(preset['models'])} 个")
+    print(f"\n   分享给别人: add-model import {output_path} --api-key THEIR_KEY")
+
 # ─── Main ───
 
 def main():
@@ -261,16 +419,21 @@ def main():
 示例：
   add-model gemini-3-flash "Gemini 3 Flash" --image
   add-model remove claude-haiku-4-5-20251001
-  add-model remove modelsproxy/claude-haiku-4-5-20251001
   add-model list --all
   add-model providers
   add-model add-provider moonshot --base-url https://api.moonshot.ai/v1 --api-key sk-xxx
   add-model remove-provider moonshot
+
+  # 一键导入预设模型包
+  add-model presets                                    # 查看可用预设
+  add-model import modelsproxy --api-key sk-xxx        # 导入预设
+  add-model import ./my-preset.json --api-key sk-xxx   # 导入自定义文件
+  add-model export --provider modelsproxy              # 导出当前配置为预设
 """
     )
 
-    p.add_argument("action", help="model-id | list | remove | providers | add-provider | remove-provider")
-    p.add_argument("name_or_id", nargs="?", default=None, help="显示名(add) / model-id(remove) / provider名")
+    p.add_argument("action", help="model-id | list | remove | providers | add-provider | remove-provider | presets | import | export")
+    p.add_argument("name_or_id", nargs="?", default=None, help="显示名/model-id/provider名/预设名")
     p.add_argument("--image", action="store_true", help="支持图片输入")
     p.add_argument("--reasoning", action="store_true", help="推理模型")
     p.add_argument("--ctx", type=int, default=200000, help="上下文窗口 (默认 200000)")
@@ -282,6 +445,8 @@ def main():
     p.add_argument("--base-url", default=None, help="Provider API 地址")
     p.add_argument("--api-key", default=None, help="Provider API Key")
     p.add_argument("--api", default="openai-completions", choices=["openai-completions", "anthropic-messages"], help="API 兼容模式 (默认 openai-completions)")
+    p.add_argument("--output", "-o", default=None, help="导出文件路径")
+    p.add_argument("--desc", default=None, help="预设描述")
 
     args = p.parse_args()
     d = load_config()
@@ -294,6 +459,19 @@ def main():
 
     elif args.action == "providers":
         list_providers(d)
+
+    elif args.action == "presets":
+        list_presets()
+
+    elif args.action == "import":
+        if not args.name_or_id:
+            print("❌ 用法: add-model import <预设名> [--api-key KEY]")
+            print("   查看可用预设: add-model presets")
+            sys.exit(1)
+        import_preset(d, args.name_or_id, args.api_key)
+
+    elif args.action == "export":
+        export_preset(d, args.provider, args.output, args.name_or_id, args.desc)
 
     elif args.action == "remove":
         if not args.name_or_id:
