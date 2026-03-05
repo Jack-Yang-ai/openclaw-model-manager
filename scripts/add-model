@@ -179,13 +179,16 @@ def add_model(d, provider, model_id, name, image, reasoning, ctx, cost_in, cost_
 
     prov.setdefault("models", []).append(new_model)
 
-    # 同步 allowlist
-    allowlist = d.get("agents", {}).get("defaults", {}).get("models", None)
-    if allowlist is not None:
-        ref = f"{provider}/{model_id}"
-        if ref not in allowlist:
-            allowlist[ref] = {"alias": name or model_id}
-            print(f"📋 已加入 allowlist: {ref}")
+    # 同步 allowlist（确保存在）
+    agents_defaults = d.setdefault("agents", {}).setdefault("defaults", {})
+    allowlist = agents_defaults.get("models")
+    if allowlist is None:
+        allowlist = {}
+        agents_defaults["models"] = allowlist
+    ref = f"{provider}/{model_id}"
+    if ref not in allowlist:
+        allowlist[ref] = {"alias": name or model_id}
+        print(f"📋 已加入 allowlist: {ref}")
 
     save_config(d)
     print(f"✅ 已添加 {provider}/{model_id}")
@@ -340,13 +343,29 @@ def import_preset(d, preset_name, api_key_override):
         print(f"🏭 创建 provider: {prov_id}")
         print(f"   Base URL: {prov_cfg.get('baseUrl', '')}")
         print(f"   API: {prov_cfg.get('api', 'openai-completions')}")
-    elif api_key_override:
-        providers[prov_id]["apiKey"] = api_key_override
-        print(f"🔑 更新 {prov_id} 的 API Key")
+    else:
+        # provider 已存在：更新 baseUrl 和 api（确保与预设一致）
+        existing_prov = providers[prov_id]
+        if prov_cfg.get("baseUrl") and existing_prov.get("baseUrl") != prov_cfg["baseUrl"]:
+            existing_prov["baseUrl"] = prov_cfg["baseUrl"]
+            print(f"🔗 更新 {prov_id} 的 Base URL: {prov_cfg['baseUrl']}")
+        if prov_cfg.get("api") and existing_prov.get("api") != prov_cfg["api"]:
+            existing_prov["api"] = prov_cfg["api"]
+            print(f"🔌 更新 {prov_id} 的 API 模式: {prov_cfg['api']}")
+        if api_key_override:
+            existing_prov["apiKey"] = api_key_override
+            print(f"🔑 更新 {prov_id} 的 API Key")
 
     # 导入模型
     existing_ids = {m["id"] for m in providers[prov_id].get("models", [])}
-    allowlist = d.get("agents", {}).get("defaults", {}).get("models", None)
+
+    # 确保 allowlist 存在（如果已有 allowlist 就用，没有就创建）
+    agents_defaults = d.setdefault("agents", {}).setdefault("defaults", {})
+    allowlist = agents_defaults.get("models")
+    if allowlist is None:
+        allowlist = {}
+        agents_defaults["models"] = allowlist
+        print(f"📋 创建 allowlist（agents.defaults.models）")
     added = 0
     skipped = 0
 
@@ -361,10 +380,9 @@ def import_preset(d, preset_name, api_key_override):
         added += 1
 
         # 同步 allowlist
-        if allowlist is not None:
-            ref = f"{prov_id}/{mid}"
-            if ref not in allowlist:
-                allowlist[ref] = {"alias": model.get("name", mid)}
+        ref = f"{prov_id}/{mid}"
+        if ref not in allowlist:
+            allowlist[ref] = {"alias": model.get("name", mid)}
 
     save_config(d)
     print(f"\n📦 预设 '{preset.get('name', preset_name)}' 导入完成")

@@ -1,6 +1,6 @@
 {
   "name": "model-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "OpenClaw 模型管理工具 — 零 token 消耗的本地 CLI，快速添加、删除、查看模型和 Provider，自动同步 allowlist 并重启 Gateway",
   "type": "skill",
   "tags": ["models", "cli", "provider", "management", "zero-cost"],
