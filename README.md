@@ -39,7 +39,7 @@ add-model import modelsproxy --api-key YOUR_API_KEY
 
 这一条命令会：
 1. 自动创建 `modelsproxy` provider（如不存在）
-2. 导入 5 个模型：Step 3.5 Flash、Kimi K2.5、Claude Sonnet 4.5、Claude Opus 4.6、Gemini 3 Flash
+2. 导入 5 个模型：Step 3.5 Flash、Kimi K2.5、claude-sonnet-4-6、Claude Opus 4.6、Gemini 3 Flash
 3. 自动同步 allowlist
 4. 自动重启 Gateway
 

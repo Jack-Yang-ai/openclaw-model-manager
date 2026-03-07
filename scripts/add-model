@@ -462,7 +462,7 @@ def main():
     p.add_argument("--all", action="store_true", help="列出所有 provider 的模型")
     p.add_argument("--base-url", default=None, help="Provider API 地址")
     p.add_argument("--api-key", default=None, help="Provider API Key")
-    p.add_argument("--api", default="openai-completions", choices=["openai-completions", "anthropic-messages"], help="API 兼容模式 (默认 openai-completions)")
+    p.add_argument("--api", default="openai-completions", choices=["openai-completions", "anthropic-messages", "google-generative-ai"], help="API 兼容模式 (默认 openai-completions)")
     p.add_argument("--output", "-o", default=None, help="导出文件路径")
     p.add_argument("--desc", default=None, help="预设描述")
 
