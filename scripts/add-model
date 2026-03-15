@@ -299,33 +299,29 @@ def list_presets():
     print(f"  用法: add-model import <预设名> --api-key YOUR_KEY")
     print()
 
-def import_preset(d, preset_name, api_key_override):
+def _resolve_preset_path(preset_name):
+    """解析预设名到文件路径"""
     presets_dir = get_presets_dir()
     if not presets_dir:
-        print("❌ 未找到 presets 目录")
-        sys.exit(1)
+        return None, None
 
-    # 支持带或不带 .json
     fname = preset_name if preset_name.endswith(".json") else preset_name + ".json"
     path = os.path.join(presets_dir, fname)
 
-    # 也支持直接传文件路径或 URL
     if not os.path.exists(path):
         if os.path.exists(preset_name):
             path = preset_name
         else:
-            print(f"❌ 预设 '{preset_name}' 不存在")
-            print(f"   可用预设: {', '.join(f.replace('.json','') for f in os.listdir(presets_dir) if f.endswith('.json'))}")
-            sys.exit(1)
+            return presets_dir, None
+    return presets_dir, path
 
-    with open(path, "r", encoding="utf-8") as f:
-        preset = json.load(f)
-
+def _import_single_preset(d, preset, api_key_override, skip_save=False):
+    """导入单个预设（不含 bundle 逻辑），返回 (added, skipped, prov_id)"""
     prov_cfg = preset.get("provider", {})
     prov_id = prov_cfg.get("id")
     if not prov_id:
         print("❌ 预设缺少 provider.id")
-        sys.exit(1)
+        return 0, 0, None
 
     providers = d.setdefault("models", {}).setdefault("providers", {})
 
@@ -333,7 +329,7 @@ def import_preset(d, preset_name, api_key_override):
     if prov_id not in providers:
         if not api_key_override and not prov_cfg.get("apiKey"):
             print(f"❌ Provider '{prov_id}' 不存在，需要提供 --api-key")
-            sys.exit(1)
+            return 0, 0, None
         providers[prov_id] = {
             "baseUrl": prov_cfg.get("baseUrl", ""),
             "apiKey": api_key_override or prov_cfg.get("apiKey", ""),
@@ -344,7 +340,6 @@ def import_preset(d, preset_name, api_key_override):
         print(f"   Base URL: {prov_cfg.get('baseUrl', '')}")
         print(f"   API: {prov_cfg.get('api', 'openai-completions')}")
     else:
-        # provider 已存在：更新 baseUrl 和 api（确保与预设一致）
         existing_prov = providers[prov_id]
         if prov_cfg.get("baseUrl") and existing_prov.get("baseUrl") != prov_cfg["baseUrl"]:
             existing_prov["baseUrl"] = prov_cfg["baseUrl"]
@@ -359,13 +354,13 @@ def import_preset(d, preset_name, api_key_override):
     # 导入模型
     existing_ids = {m["id"] for m in providers[prov_id].get("models", [])}
 
-    # 确保 allowlist 存在（如果已有 allowlist 就用，没有就创建）
     agents_defaults = d.setdefault("agents", {}).setdefault("defaults", {})
     allowlist = agents_defaults.get("models")
     if allowlist is None:
         allowlist = {}
         agents_defaults["models"] = allowlist
         print(f"📋 创建 allowlist（agents.defaults.models）")
+
     added = 0
     skipped = 0
 
@@ -379,19 +374,82 @@ def import_preset(d, preset_name, api_key_override):
         existing_ids.add(mid)
         added += 1
 
-        # 同步 allowlist
         ref = f"{prov_id}/{mid}"
         if ref not in allowlist:
             allowlist[ref] = {"alias": model.get("name", mid)}
 
-    save_config(d)
+    if not skip_save:
+        save_config(d)
+
+    return added, skipped, prov_id
+
+def import_preset(d, preset_name, api_key_override):
+    presets_dir, path = _resolve_preset_path(preset_name)
+    if not presets_dir:
+        print("❌ 未找到 presets 目录")
+        sys.exit(1)
+    if not path:
+        avail = ', '.join(f.replace('.json','') for f in os.listdir(presets_dir) if f.endswith('.json'))
+        print(f"❌ 预设 '{preset_name}' 不存在")
+        print(f"   可用预设: {avail}")
+        sys.exit(1)
+
+    with open(path, "r", encoding="utf-8") as f:
+        preset = json.load(f)
+
+    # Bundle 预设：包含多个子预设，一键全部导入
+    if preset.get("bundle"):
+        sub_names = preset.get("presets", [])
+        if not sub_names:
+            print("❌ Bundle 预设没有包含任何子预设")
+            sys.exit(1)
+
+        print(f"📦 Bundle 预设 '{preset.get('name', preset_name)}' — 包含 {len(sub_names)} 个子预设")
+        if preset.get("description"):
+            print(f"   {preset['description']}")
+        print()
+
+        total_added = 0
+        total_skipped = 0
+        imported_providers = []
+
+        for sub_name in sub_names:
+            sub_dir, sub_path = _resolve_preset_path(sub_name)
+            if not sub_path:
+                print(f"⚠️  子预设 '{sub_name}' 未找到，跳过")
+                continue
+            with open(sub_path, "r", encoding="utf-8") as sf:
+                sub_preset = json.load(sf)
+            print(f"── 导入子预设: {sub_preset.get('name', sub_name)} ──")
+            added, skipped, prov_id = _import_single_preset(d, sub_preset, api_key_override, skip_save=True)
+            total_added += added
+            total_skipped += skipped
+            if prov_id:
+                imported_providers.append(prov_id)
+            print(f"   ✅ 新增: {added} | ⏭️ 跳过: {skipped}")
+            print()
+
+        save_config(d)
+        print(f"📦 Bundle 导入完成！总计: ✅ {total_added} 新增 | ⏭️ {total_skipped} 跳过")
+        print()
+
+        for prov_id in imported_providers:
+            list_models(d, prov_id)
+
+        restart_gw()
+        return
+
+    # 单个预设
+    added, skipped, prov_id = _import_single_preset(d, preset, api_key_override)
+    if prov_id is None:
+        sys.exit(1)
+
     print(f"\n📦 预设 '{preset.get('name', preset_name)}' 导入完成")
     print(f"   ✅ 新增: {added} 个模型")
     if skipped:
         print(f"   ⏭️  跳过: {skipped} 个（已存在）")
     print()
 
-    # 列出导入后的模型
     list_models(d, prov_id)
     restart_gw()
 

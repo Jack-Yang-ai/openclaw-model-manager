@@ -33,15 +33,21 @@ ln -sf ~/.openclaw/workspace/skills/model-manager/scripts/add-model ~/.local/bin
 # 查看可用预设
 add-model presets
 
-# 一键导入 modelsproxy 全部模型（5个模型 + 自动创建 provider）
-add-model import modelsproxy --api-key YOUR_API_KEY
+# 一键导入 modelsproxy 全部模型（自动创建 2 个 provider）
+add-model import modelsproxy-all --api-key YOUR_API_KEY
+
+# 或单独导入某个协议的模型
+add-model import modelsproxy --api-key YOUR_API_KEY         # Anthropic 协议模型
+add-model import modelsproxy-openai --api-key YOUR_API_KEY   # OpenAI 协议模型
 ```
 
-这一条命令会：
-1. 自动创建 `modelsproxy` provider（如不存在）
-2. 导入 5 个模型：Step 3.5 Flash、Kimi K2.5、claude-sonnet-4-6、Claude Opus 4.6、Gemini 3 Flash
+**`modelsproxy-all`** 一条命令会：
+1. 创建 `modelsproxy` provider（Anthropic 协议）→ Step 3.5 Flash、Kimi K2.5、Claude Sonnet 4.6、Claude Opus 4.6
+2. 创建 `modelsproxy-openai` provider（OpenAI 协议）→ GPT-5 Mini、GPT-5 Nano
 3. 自动同步 allowlist
 4. 自动重启 Gateway
+
+> ⚠️ **为什么分两个 provider？** StepFun Models Proxy 同时支持 Anthropic 和 OpenAI 协议，但 OpenClaw 每个 provider 只能绑定一种 API 模式。Claude/Kimi/Step 走 `anthropic-messages`，GPT 系列走 `openai-completions`。
 
 ### 单独管理模型
 
@@ -116,6 +122,21 @@ add-model import my-models.json --api-key THEIR_KEY
 ```
 
 注意：预设中**不包含 API Key**，用户导入时通过 `--api-key` 提供。
+
+### Bundle 预设（组合多个预设）
+
+当一个代理需要多种 API 协议的模型时，可以创建 bundle 预设：
+
+```json
+{
+  "name": "All Models",
+  "description": "一键导入全部模型",
+  "bundle": true,
+  "presets": ["modelsproxy", "modelsproxy-openai"]
+}
+```
+
+`add-model import <bundle名>` 会依次导入所有子预设，共用同一个 `--api-key`。
 
 ## 参数说明
 

@@ -1,0 +1,6 @@
+{
+  "name": "StepFun Models Proxy (All)",
+  "description": "一键导入 modelsproxy 全部模型 — 自动创建两个 provider（Anthropic 协议 + OpenAI 协议），无 Google 模型",
+  "bundle": true,
+  "presets": ["modelsproxy", "modelsproxy-openai"]
+}

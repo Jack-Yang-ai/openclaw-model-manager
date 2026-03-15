@@ -1,6 +1,6 @@
 {
-  "name": "StepFun Models Proxy",
-  "description": "通过 StepFun Models Proxy 访问多个顶级模型（Claude、Kimi、Gemini 等），需自行申请 API Key",
+  "name": "StepFun Models Proxy (Anthropic)",
+  "description": "通过 StepFun Models Proxy 访问 Anthropic 协议模型（Claude、Step、Kimi 等）",
   "provider": {
     "id": "modelsproxy",
     "baseUrl": "https://models-proxy.stepfun-inc.com",
@@ -42,26 +42,6 @@
       "contextWindow": 200000,
       "maxTokens": 200000,
       "cost": { "input": 105, "output": 525, "cacheRead": 0, "cacheWrite": 0 }
-    },
-    {
-      "id": "gemini-3-flash-preview",
-      "name": "Gemini 3 Flash",
-      "api": "google-generative-ai",
-      "input": ["text", "image"],
-      "reasoning": false,
-      "contextWindow": 200000,
-      "maxTokens": 8192,
-      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
-    },
-    {
-      "id": "gemini-3-flash",
-      "name": "gemini-3-flash",
-      "api": "google-generative-ai",
-      "input": ["text", "image"],
-      "reasoning": false,
-      "contextWindow": 200000,
-      "maxTokens": 8192,
-      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
     }
   ]
 }
